@@ -7,10 +7,12 @@ import { BarretenbergBackend } from "@noir-lang/backend_barretenberg";
 import { Noir } from "@noir-lang/noir_js";
 import data_prove from "@/circuit/data_prove/target/data_prove.json";
 import { BigNumber, ethers } from "ethers";
+import Papa from "papaparse";
 
 export default function Home() {
   const [file, setFile] = useState(null);
   const [text, setText] = useState("");
+  const [proofFile, setProofFile] = useState(null);
 
   const readCSV = async (file) => {
     const reader = new FileReader();
@@ -81,6 +83,7 @@ export default function Home() {
           input: founded,
           lowerLimit,
           upperLimit,
+          uniqueId: item["Organization Id"],
         };
       });
 
@@ -93,7 +96,7 @@ export default function Home() {
 
       const proofArray = [];
       for (const item of modifiedArr) {
-        const { input, lowerLimit, upperLimit } = item;
+        const { input, lowerLimit, upperLimit, uniqueId } = item;
         if (input === null) {
           proofArray.push({
             lowerLimit,
@@ -114,6 +117,7 @@ export default function Home() {
               lowerLimit,
               upperLimit,
               proof: ethers.utils.hexlify(proof.proof),
+              uniqueId: uniqueId,
             });
           } catch (error) {
             console.log(lowerLimit, upperLimit, input);
@@ -122,6 +126,86 @@ export default function Home() {
       }
 
       console.log("CSV proofArray:", proofArray);
+
+      const csv = Papa.unparse(proofArray);
+
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "output.csv";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    };
+
+    reader.readAsText(file);
+  };
+
+  const verifyCSV = async (file) => {
+    const reader = new FileReader();
+
+    reader.onload = async function (e) {
+      const content = e.target.result;
+      const [keys, ...rest] = content
+        .toString()
+        .trim()
+        .split("\n")
+        .map((item) => item.split(","));
+
+      const formedArr = rest.map((item) => {
+        const object = {};
+        keys.forEach((key, index) => (object[key] = item.at(index)));
+        return object;
+      });
+
+      console.log("Proof CSV formedArr: ", formedArr);
+
+      const backend = new BarretenbergBackend(data_prove, {
+        threads: navigator.hardwareConcurrency,
+      });
+      const noir = new Noir(data_prove, backend);
+
+      for (const item of formedArr) {
+        const { lowerLimit, upperLimit, proof, uniqueId } = item;
+
+        const publicInputs = new Map();
+
+        publicInputs.set(
+          "min",
+          ethers.utils.hexZeroPad(ethers.utils.hexlify(Number(lowerLimit)), 32)
+        );
+        publicInputs.set(
+          "max",
+          ethers.utils.hexZeroPad(ethers.utils.hexlify(Number(upperLimit)), 32)
+        );
+
+        if (proof === "null") {
+          console.log(
+            `Organization with uniqueId: ${uniqueId} has no proof for range: [${lowerLimit}, ${upperLimit}]`
+          );
+          break;
+        } else {
+          const inputs = {
+            publicInputs,
+            proof: Array.from(ethers.utils.arrayify(proof)),
+          };
+
+          const result = await noir.verifyFinalProof(inputs);
+
+          if (result) {
+            console.log(
+              `Organization with uniqueId: ${uniqueId} has a valid proof for range: [${lowerLimit}, ${upperLimit}]`
+            );
+          } else {
+            console.log(
+              `Organization with uniqueId: ${uniqueId} has an invalid proof for range: [${lowerLimit}, ${upperLimit}]`
+            );
+            break;
+          }
+        }
+      }
     };
 
     reader.readAsText(file);
@@ -137,7 +221,14 @@ export default function Home() {
       <Button onClick={() => readCSV(file)} disabled={!file}>
         Read CSV
       </Button>
-      <h1 className="text-black">{text}</h1>
+      <Input
+        placeholder="Upload proof file"
+        type="file"
+        onChange={(e) => setProofFile(e.target.files[0])}
+      />
+      <Button onClick={() => verifyCSV(proofFile)} disabled={!proofFile}>
+        Verify Proof
+      </Button>
     </div>
   );
 }
